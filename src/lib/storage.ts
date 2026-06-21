@@ -1,10 +1,27 @@
 import * as fs from "fs/promises";
 import * as path from "path";
 
-const DEFAULT_UPLOADS_DIR = path.join(process.cwd(), "uploads");
+/**
+ * In production (standalone Next.js), process.cwd() may not resolve to /app,
+ * causing relative "uploads" mkdir to fail with ENOENT.
+ * Use an absolute path in production to match the Docker/K8s mount point.
+ */
+const DEFAULT_UPLOADS_DIR =
+  process.env.NODE_ENV === "production"
+    ? "/app/uploads"
+    : path.join(process.cwd(), "uploads");
+
+let baseDirEnsured = false;
 
 function getUploadsBaseDir(): string {
   return process.env.UPLOADS_DIR || DEFAULT_UPLOADS_DIR;
+}
+
+async function ensureBaseDir(): Promise<void> {
+  if (baseDirEnsured) return;
+  const baseDir = getUploadsBaseDir();
+  await fs.mkdir(path.join(baseDir, "agent-logs"), { recursive: true });
+  baseDirEnsured = true;
 }
 
 function resolveStoragePath(bucket: string, storageKey: string): string {
@@ -19,6 +36,7 @@ export async function uploadFile(
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   _contentType?: string
 ): Promise<void> {
+  await ensureBaseDir();
   const filePath = resolveStoragePath("agent-logs", storageKey);
   const dir = path.dirname(filePath);
   await fs.mkdir(dir, { recursive: true });
