@@ -1,15 +1,7 @@
 import * as fs from "fs/promises";
 import * as path from "path";
 
-/**
- * Use path.resolve to always produce an absolute path for the uploads dir.
- * path.join(process.cwd(), "uploads") can produce a relative path if cwd()
- * returns something unexpected in Next.js standalone mode.
- * path.resolve always returns an absolute path, which prevents ENOENT on mkdir.
- */
 const DEFAULT_UPLOADS_DIR = path.resolve(process.cwd(), "uploads");
-
-
 import { prisma } from "@/lib/prisma";
 
 let baseDirEnsured = false;
@@ -26,7 +18,6 @@ async function ensureBaseDir(): Promise<void> {
 }
 
 function resolveStoragePath(bucket: string, storageKey: string): string {
-  // Prevent path traversal
   const sanitizedKey = storageKey.replace(/\.\./g, "").replace(/^\//, "");
   return path.join(getUploadsBaseDir(), bucket, sanitizedKey);
 }
@@ -34,7 +25,6 @@ function resolveStoragePath(bucket: string, storageKey: string): string {
 export async function uploadFile(
   storageKey: string,
   data: Buffer | ArrayBuffer | Uint8Array,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   _contentType?: string
 ): Promise<void> {
   const buffer = Buffer.isBuffer(data)
@@ -57,8 +47,9 @@ export async function uploadFile(
       await fs.mkdir(tmpDir, { recursive: true });
       await fs.writeFile(path.join(tmpDir, filename), buffer);
       console.log("Cached log file in /tmp/uploads");
-    } catch (tmpErr) {
-      console.warn("Failed to write to /tmp cache:", tmpErr);
+    } catch (tmpWriteErr) {
+      // renamed from tmpError → tmpWriteErr to make it clear it's used
+      console.warn("Failed to write to /tmp cache:", tmpWriteErr);
     }
   }
 }
@@ -74,15 +65,16 @@ export async function downloadFile(storageKey: string): Promise<Buffer> {
       const filename = path.basename(storageKey);
       const tmpFilePath = path.join("/tmp", "uploads", "agent-logs", filename);
       return await fs.readFile(tmpFilePath);
-    } catch (tmpError) {
+    } catch {
       // 3. Fall back to database
       try {
         const logfile = await prisma.runLogfile.findFirst({
           where: { storageKey }
         });
         if (logfile && logfile.metadata) {
-          const metadata = logfile.metadata as any;
-          if (metadata.fileContentBase64) {
+          // Fix: type the metadata properly instead of using `any`
+          const metadata = logfile.metadata as Record<string, unknown>;
+          if (typeof metadata.fileContentBase64 === "string") {
             return Buffer.from(metadata.fileContentBase64, "base64");
           }
         }
