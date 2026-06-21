@@ -2,14 +2,13 @@ import * as fs from "fs/promises";
 import * as path from "path";
 
 /**
- * In production (standalone Next.js), process.cwd() may not resolve to /app,
- * causing relative "uploads" mkdir to fail with ENOENT.
- * Use an absolute path in production to match the Docker/K8s mount point.
+ * Use path.resolve to always produce an absolute path for the uploads dir.
+ * path.join(process.cwd(), "uploads") can produce a relative path if cwd()
+ * returns something unexpected in Next.js standalone mode.
+ * path.resolve always returns an absolute path, which prevents ENOENT on mkdir.
  */
-const DEFAULT_UPLOADS_DIR =
-  process.env.NODE_ENV === "production"
-    ? "/app/uploads"
-    : path.join(process.cwd(), "uploads");
+const DEFAULT_UPLOADS_DIR = path.resolve(process.cwd(), "uploads");
+
 
 let baseDirEnsured = false;
 
