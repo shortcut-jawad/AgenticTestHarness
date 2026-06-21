@@ -10,6 +10,8 @@ import * as path from "path";
 const DEFAULT_UPLOADS_DIR = path.resolve(process.cwd(), "uploads");
 
 
+import { prisma } from "@/lib/prisma";
+
 let baseDirEnsured = false;
 
 function getUploadsBaseDir(): string {
@@ -35,19 +37,61 @@ export async function uploadFile(
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   _contentType?: string
 ): Promise<void> {
-  await ensureBaseDir();
-  const filePath = resolveStoragePath("agent-logs", storageKey);
-  const dir = path.dirname(filePath);
-  await fs.mkdir(dir, { recursive: true });
   const buffer = Buffer.isBuffer(data)
     ? data
     : Buffer.from(data instanceof ArrayBuffer ? new Uint8Array(data) : data);
-  await fs.writeFile(filePath, buffer);
+
+  // 1. Try local filesystem
+  try {
+    await ensureBaseDir();
+    const filePath = resolveStoragePath("agent-logs", storageKey);
+    const dir = path.dirname(filePath);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(filePath, buffer);
+  } catch (err) {
+    console.warn("Failed to write to local storage (expected on Vercel):", err);
+    // 2. Try ephemeral /tmp fallback
+    try {
+      const filename = path.basename(storageKey);
+      const tmpDir = path.join("/tmp", "uploads", "agent-logs");
+      await fs.mkdir(tmpDir, { recursive: true });
+      await fs.writeFile(path.join(tmpDir, filename), buffer);
+      console.log("Cached log file in /tmp/uploads");
+    } catch (tmpErr) {
+      console.warn("Failed to write to /tmp cache:", tmpErr);
+    }
+  }
 }
 
 export async function downloadFile(storageKey: string): Promise<Buffer> {
-  const filePath = resolveStoragePath("agent-logs", storageKey);
-  return fs.readFile(filePath);
+  // 1. Try default uploads dir
+  try {
+    const filePath = resolveStoragePath("agent-logs", storageKey);
+    return await fs.readFile(filePath);
+  } catch (fsError) {
+    // 2. Try /tmp/uploads cache
+    try {
+      const filename = path.basename(storageKey);
+      const tmpFilePath = path.join("/tmp", "uploads", "agent-logs", filename);
+      return await fs.readFile(tmpFilePath);
+    } catch (tmpError) {
+      // 3. Fall back to database
+      try {
+        const logfile = await prisma.runLogfile.findFirst({
+          where: { storageKey }
+        });
+        if (logfile && logfile.metadata) {
+          const metadata = logfile.metadata as any;
+          if (metadata.fileContentBase64) {
+            return Buffer.from(metadata.fileContentBase64, "base64");
+          }
+        }
+      } catch (dbError) {
+        console.error("Failed to fetch logfile from database:", dbError);
+      }
+      throw fsError;
+    }
+  }
 }
 
 export function getPublicUrl(storageKey: string): string {

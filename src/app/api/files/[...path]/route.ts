@@ -1,9 +1,8 @@
 import { NextResponse } from "next/server";
-import * as fs from "fs/promises";
 import * as nodePath from "path";
 import { getScopedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { getUploadsDir } from "@/lib/storage";
+import { downloadFile } from "@/lib/storage";
 
 const MIME_TYPES: Record<string, string> = {
   ".json": "application/json",
@@ -59,16 +58,9 @@ export async function GET(
     return NextResponse.json({ error: "File not found" }, { status: 404 });
   }
 
-  const filePath = nodePath.join(getUploadsDir(), joined);
-
   try {
-    const stat = await fs.stat(filePath);
-    if (!stat.isFile()) {
-      return NextResponse.json({ error: "Not a file" }, { status: 404 });
-    }
-
-    const data = await fs.readFile(filePath);
-    const ext = nodePath.extname(filePath).toLowerCase();
+    const data = await downloadFile(storageKey);
+    const ext = nodePath.extname(storageKey).toLowerCase();
     const contentType = MIME_TYPES[ext] || "application/octet-stream";
 
     return new Response(new Uint8Array(data), {

@@ -84,6 +84,8 @@ export async function POST(req: Request) {
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
 
+  const base64Content = Buffer.from(fileBuffer).toString("base64");
+
   await prisma.runLogfile.create({
     data: {
       runId: run.id,
@@ -94,14 +96,12 @@ export async function POST(req: Request) {
       sizeBytes: file.size,
       checksum: sha256,
       contentType: file.type || "text/plain",
-      metadata:
-        sourceType || formatHint || mappingConfig
-          ? ({
-              sourceType,
-              formatHint,
-              mappingConfig,
-            } as Prisma.InputJsonValue)
-          : undefined,
+      metadata: {
+        sourceType,
+        formatHint,
+        mappingConfig,
+        fileContentBase64: base64Content,
+      } as Prisma.InputJsonValue,
     },
   });
 
