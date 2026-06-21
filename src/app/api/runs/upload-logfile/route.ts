@@ -21,7 +21,6 @@ export async function POST(req: Request) {
     typeof formatHintRaw === "string" && formatHintRaw.trim()
       ? formatHintRaw.trim()
       : null;
-
   let mappingConfig: Prisma.InputJsonValue | null = null;
   if (typeof mappingConfigRaw === "string" && mappingConfigRaw.trim()) {
     try {
@@ -45,6 +44,17 @@ export async function POST(req: Request) {
     );
   }
 
+  // Read the buffer ONCE upfront — File.arrayBuffer() can only be consumed once
+  let fileBuffer: ArrayBuffer;
+  try {
+    fileBuffer = await file.arrayBuffer();
+  } catch (err) {
+    return NextResponse.json(
+      { error: `Failed to read file: ${err instanceof Error ? err.message : String(err)}` },
+      { status: 400 }
+    );
+  }
+
   const run = await prisma.agentRun.create({
     data: {
       projectId,
@@ -62,23 +72,19 @@ export async function POST(req: Request) {
     data: { status: "UPLOADING" },
   });
 
+  // Attempt filesystem upload — non-fatal, DB is the source of truth fallback
   try {
-    const fileBuffer = await file.arrayBuffer();
     await uploadFile(storageKey, fileBuffer, file.type || "text/plain");
   } catch (uploadError) {
-    await prisma.agentRun.update({
-      where: { id: run.id },
-      data: { status: "FAILED" },
-    });
-    return NextResponse.json(
-      { error: `Upload failed: ${uploadError instanceof Error ? uploadError.message : String(uploadError)}` },
-      { status: 500 }
+    // Log but don't fail — file content will be stored in DB metadata below
+    console.warn(
+      "Filesystem upload failed, falling back to DB storage:",
+      uploadError instanceof Error ? uploadError.message : String(uploadError)
     );
   }
 
   const publicUrl = getPublicUrl(storageKey);
 
-  const fileBuffer = await file.arrayBuffer();
   const hashBuffer = await crypto.subtle.digest("SHA-256", fileBuffer);
   const sha256 = Array.from(new Uint8Array(hashBuffer))
     .map((b) => b.toString(16).padStart(2, "0"))
@@ -104,7 +110,6 @@ export async function POST(req: Request) {
       } as Prisma.InputJsonValue,
     },
   });
-
 
   await prisma.agentRun.update({
     where: { id: run.id },
