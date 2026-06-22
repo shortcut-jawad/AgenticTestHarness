@@ -45,6 +45,17 @@ next-env.d.ts
 supabase/.temp
 supabase/.branches
 
+# DevOps files (not needed in image)
+nginx/
+.github/
+
+# Test files
+**/*.test.ts
+**/*.test.tsx
+**/*.spec.ts
+**/*.spec.tsx
+__tests__/
+
 # Git
 .git
 .gitignore
