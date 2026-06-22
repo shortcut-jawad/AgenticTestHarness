@@ -1,18 +1,32 @@
-name: Build
+# ─────────────────────────────────────────────────────────────────────────────
+# build.yml — Static Analysis (SonarQube)
+#
+# Runs on: every push to main, every PR
+# What it does: SonarQube code quality + security scan
+#
+# Fix from your version:
+#   - ubuntu-latest instead of macos-latest (10x cheaper GitHub Actions minutes)
+#   - fetch-depth: 0 kept (SonarQube needs full git history for blame/coverage)
+# ─────────────────────────────────────────────────────────────────────────────
+name: Build - Static Analysis
+
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
     types: [opened, synchronize, reopened]
+
 jobs:
   sonarqube:
-    name: SonarQube
-    runs-on: macos-latest
+    name: SonarQube Scan
+    runs-on: ubuntu-latest        # was macos-latest — ubuntu is cheaper & faster
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 0          # Full history required for SonarQube blame analysis
+
       - name: SonarQube Scan
         uses: SonarSource/sonarqube-scan-action@v6
         env:
