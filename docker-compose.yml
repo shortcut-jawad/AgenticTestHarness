@@ -1,68 +1,117 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# DevOps Demo Stack
+#
+# Services:
+#   db     → PostgreSQL (single instance, health-checked)
+#   app    → Next.js (multiple replicas via --scale)
+#   nginx  → Nginx load balancer (round-robin across app replicas)
+#
+# Usage:
+#   docker-compose up --build                  # 1 app replica (default)
+#   docker-compose up --build --scale app=3    # 3 replicas + load balancer
+#   docker-compose up --build --scale app=5    # 5 replicas
+#
+# Since you use Supabase in production, the local `db` service is for
+# local/demo runs only. In CI, DATABASE_URL points to Supabase directly.
+# ─────────────────────────────────────────────────────────────────────────────
+
 services:
+
+  # ── PostgreSQL (local dev / demo only) ──────────────────────────────────────
   db:
     image: postgres:16-alpine
     container_name: agentic-test-harness-db
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_USER:     ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-      POSTGRES_DB: ${POSTGRES_DB:-agentic_test_harness}
+      POSTGRES_DB:       ${POSTGRES_DB:-agentic_test_harness}
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
-      - "127.0.0.1:5433:5432"
+      - "127.0.0.1:5433:5432"   # Only bind to localhost — never expose DB publicly
     networks:
       - app-network
     healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-agentic_test_harness}",
-        ]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-agentic_test_harness}"]
       interval: 5s
       timeout: 5s
       retries: 10
 
+  # ── Next.js app (scale this with --scale app=N) ─────────────────────────────
   app:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: agentic-test-harness-app
+    # NOTE: No container_name here — required for --scale to work.
+    # With a fixed name Docker can only run 1 instance.
     restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
-    ports:
-      - "${APP_PORT:-3000}:3000"
+    # No ports exposed directly — all traffic goes through Nginx
+    expose:
+      - "3000"
     environment:
+      # ── Database ────────────────────────────────────────────────────────────
+      # For local demo: points to the db service above
+      # For production CI: override with Supabase URLs via GitHub Secrets
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-agentic_test_harness}
-      DIRECT_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-agentic_test_harness}
+      DIRECT_URL:   postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-agentic_test_harness}
 
-      JWT_SECRET: ${JWT_SECRET}
+      # ── Auth ────────────────────────────────────────────────────────────────
+      JWT_SECRET:       ${JWT_SECRET}
       JWT_EXPIRES_DAYS: ${JWT_EXPIRES_DAYS:-14}
 
+      # ── AI providers ────────────────────────────────────────────────────────
       GOOGLE_GEMINI_API: ${GOOGLE_GEMINI_API}
-      GROQ_API_KEY: ${GROQ_API_KEY}
-
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
-      OPENAI_MODEL: ${OPENAI_MODEL:-}
-      OPENAI_API_KEY_1: ${OPENAI_API_KEY_1:-}
-      OPENAI_API_KEY_2: ${OPENAI_API_KEY_2:-}
-      OPENAI_MODEL_1: ${OPENAI_MODEL_1:-}
-      OPENAI_MODEL_2: ${OPENAI_MODEL_2:-}
+      GROQ_API_KEY:      ${GROQ_API_KEY}
+      OPENAI_API_KEY:    ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL:   ${OPENAI_BASE_URL:-}
+      OPENAI_MODEL:      ${OPENAI_MODEL:-}
+      OPENAI_API_KEY_1:  ${OPENAI_API_KEY_1:-}
+      OPENAI_API_KEY_2:  ${OPENAI_API_KEY_2:-}
+      OPENAI_MODEL_1:    ${OPENAI_MODEL_1:-}
+      OPENAI_MODEL_2:    ${OPENAI_MODEL_2:-}
 
       NODE_ENV: production
     networks:
       - app-network
     volumes:
-      - ./prisma:/app/prisma:ro
-      - uploads:/app/uploads
+      - ./prisma:/app/prisma:ro    # Schema available without rebuild
+      - uploads:/app/uploads       # Shared uploads across all replicas
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 40s            # Give entrypoint time to run migrations
 
+  # ── Nginx load balancer ───────────────────────────────────────────────────────
+  nginx:
+    image: nginx:alpine
+    container_name: agentic-test-harness-nginx
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "${APP_PORT:-3000}:80"     # Same port as before — just goes through Nginx now
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+# ── Named volumes ──────────────────────────────────────────────────────────────
 volumes:
   pgdata:
   uploads:
 
+# ── Networks ───────────────────────────────────────────────────────────────────
 networks:
   app-network:
     driver: bridge
