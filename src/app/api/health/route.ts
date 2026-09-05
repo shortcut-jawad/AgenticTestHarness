@@ -3,9 +3,8 @@
 // 
 // Health check endpoint used by:
 //   - Docker HEALTHCHECK
-//   - Nginx upstream monitoring
 //   - GitHub Actions post-deploy check
-//   - Kubernetes liveness/readiness probes (if you go that route)
+//   - Kubernetes liveness/readiness probes
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { NextResponse } from 'next/server'

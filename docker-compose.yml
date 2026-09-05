@@ -1,23 +1,18 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# DevOps Demo Stack
+# Local development / demo stack
 #
-# Services:
-#   db     → PostgreSQL (single instance, health-checked)
-#   app    → Next.js (multiple replicas via --scale)
-#   nginx  → Nginx load balancer (round-robin across app replicas)
+# Production runs on a 3-node k3s cluster on AWS EC2 (see k8s/ and
+# infra/aws/) — load balancing across replicas is handled by k3s's built-in
+# ServiceLB there, not by anything in this file. This compose file is for
+# running the app locally against a throwaway Postgres instance only.
 #
 # Usage:
-#   docker-compose up --build                  # 1 app replica (default)
-#   docker-compose up --build --scale app=3    # 3 replicas + load balancer
-#   docker-compose up --build --scale app=5    # 5 replicas
-#
-# Since you use Supabase in production, the local `db` service is for
-# local/demo runs only. In CI, DATABASE_URL points to Supabase directly.
+#   docker-compose up --build
 # ─────────────────────────────────────────────────────────────────────────────
 
 services:
 
-  # ── PostgreSQL (local dev / demo only) ──────────────────────────────────────
+  # ── PostgreSQL (local dev only) ─────────────────────────────────────────────
   db:
     image: postgres:16-alpine
     container_name: agentic-test-harness-db
@@ -38,26 +33,24 @@ services:
       timeout: 5s
       retries: 10
 
-  # ── Next.js app (scale this with --scale app=N) ─────────────────────────────
+  # ── Next.js app ──────────────────────────────────────────────────────────────
   app:
     build:
       context: .
       dockerfile: Dockerfile
-    # NOTE: No container_name here — required for --scale to work.
-    # With a fixed name Docker can only run 1 instance.
+    container_name: agentic-test-harness-app
     restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
-    # No ports exposed directly — all traffic goes through Nginx
-    expose:
-      - "3000"
+    ports:
+      - "${APP_PORT:-3000}:3000"
     environment:
       # ── Database ────────────────────────────────────────────────────────────
-      # For local demo: points to the db service above
-      # For production CI: override with Supabase URLs via GitHub Secrets
-      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-agentic_test_harness}
-      DIRECT_URL:   postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-agentic_test_harness}
+      # For local demo: points to the db service above.
+      # Set these in .env.local (or export them) to point at Supabase instead.
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-agentic_test_harness}}
+      DIRECT_URL:   ${DIRECT_URL:-postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-agentic_test_harness}}
 
       # ── Auth ────────────────────────────────────────────────────────────────
       JWT_SECRET:       ${JWT_SECRET}
@@ -79,32 +72,13 @@ services:
       - app-network
     volumes:
       - ./prisma:/app/prisma:ro    # Schema available without rebuild
-      - uploads:/app/uploads       # Shared uploads across all replicas
+      - uploads:/app/uploads
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
       interval: 15s
       timeout: 5s
       retries: 3
       start_period: 40s            # Give entrypoint time to run migrations
-
-  # ── Nginx load balancer ───────────────────────────────────────────────────────
-  nginx:
-    image: nginx:alpine
-    container_name: agentic-test-harness-nginx
-    restart: unless-stopped
-    depends_on:
-      - app
-    ports:
-      - "${APP_PORT:-3000}:80"     # Same port as before — just goes through Nginx now
-    volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-    networks:
-      - app-network
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost/api/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
 
 # ── Named volumes ──────────────────────────────────────────────────────────────
 volumes:

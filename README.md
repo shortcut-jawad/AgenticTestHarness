@@ -202,6 +202,26 @@ docker compose up --build
 
 The app will be available at `http://localhost:3000` (configurable via `APP_PORT`).
 
+### Deploying to AWS (k3s)
+
+Production runs on a self-managed 3-node [k3s](https://k3s.io) cluster on AWS EC2 (free-tier-eligible instances). k3s's built-in ServiceLB load-balances across all 3 nodes/replicas — there's no AWS ELB/ALB involved.
+
+```bash
+# One-time: provisions the VPC security group, 3 EC2 instances, and the k3s cluster
+./infra/aws/provision-k3s-cluster.sh
+
+# Day to day: stop the nodes when not in use, start them again later
+./infra/aws/stop-cluster.sh
+./infra/aws/start-cluster.sh
+
+# Permanently tear the cluster down
+./infra/aws/teardown-cluster.sh
+```
+
+After provisioning, create the `app-secrets` Kubernetes Secret (see `k8s/secrets.example.yaml`) and set the `KUBE_CONFIG` / `PRODUCTION_URL` GitHub Actions secrets as printed by the provisioning script. From then on, every push to `main` that passes CI is deployed automatically by `cd.yml`.
+
+**Cost note:** AWS Free Tier covers 750 instance-hours/month *total*, not per instance, and (as of AWS's 2024 pricing change) every public IPv4 address costs ~$0.005/hr even while attached to a running instance. Running all 3 nodes continuously is **not** free — expect roughly $20-30/month unless you stop the cluster when it's not in use via `stop-cluster.sh`.
+
 ### Database Setup
 
 ```bash
@@ -226,9 +246,11 @@ Three GitHub Actions workflows:
 
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
-| `ci.yml` | Push to `main`, PRs | Lint and build validation |
-| `cd.yml` | After successful CI | Vercel deployment |
+| `ci.yml` | Push to `main`, PRs | Lint, test, and build validation |
+| `cd.yml` | After successful CI on `main` | Build + push Docker image, deploy to the AWS k3s cluster, health-check, auto-rollback |
 | `build.yml` | Push/PR | SonarQube code quality scan |
+
+(Vercel deploys its own preview/production builds automatically via its GitHub App integration — that's separate from these workflows and untouched by them.)
 
 ## API Routes
 
