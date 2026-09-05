@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
-# Permanently terminates the 3 cluster instances and deletes the security
-# group. This is destructive and irreversible — the instances and their
-# EBS volumes (root volumes are delete-on-termination by default) are gone
-# for good. Only the key pair is left behind (delete it yourself via
+# Permanently terminates the cluster instance and deletes the security
+# group. This is destructive and irreversible — the instance and its EBS
+# volume (root volume is delete-on-termination by default) are gone for
+# good. Only the key pair is left behind (delete it yourself via
 # `aws ec2 delete-key-pair` if you're fully done with this cluster).
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/.cluster-state.env"
 
-read -p "This will PERMANENTLY terminate node-1/2/3 in ${REGION}. Type 'yes' to continue: " CONFIRM
+read -p "This will PERMANENTLY terminate the node in ${REGION}. Type 'yes' to continue: " CONFIRM
 if [ "$CONFIRM" != "yes" ]; then
   echo "Aborted."
   exit 1
 fi
 
-echo "==> Terminating instances"
-aws ec2 terminate-instances --region "$REGION" --instance-ids "$NODE1_ID" "$NODE2_ID" "$NODE3_ID"
-aws ec2 wait instance-terminated --region "$REGION" --instance-ids "$NODE1_ID" "$NODE2_ID" "$NODE3_ID"
+echo "==> Terminating instance"
+aws ec2 terminate-instances --region "$REGION" --instance-ids "$NODE_ID"
+aws ec2 wait instance-terminated --region "$REGION" --instance-ids "$NODE_ID"
 
 echo "==> Deleting security group"
 aws ec2 delete-security-group --region "$REGION" --group-id "$SG_ID" || echo "    (already gone or still in use, skipping)"

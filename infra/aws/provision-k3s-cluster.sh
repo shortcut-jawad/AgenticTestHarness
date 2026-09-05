@@ -2,8 +2,16 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # provision-k3s-cluster.sh
 #
-# Provisions a 3-node self-managed k3s cluster on AWS EC2 for this app,
-# using the account's default VPC and free-tier-eligible instances.
+# Provisions a SINGLE-NODE k3s cluster on one free-tier-eligible AWS EC2
+# instance for this app, using the account's default VPC.
+#
+# Why single-node: this app has negligible traffic, and AWS has no way to
+# run an internet-facing instance at literal $0 — every public IPv4 address
+# has cost ~$0.005/hr (~$3.65/mo) since AWS's Feb 2024 pricing change,
+# regardless of instance count or size. Adding more nodes only adds more of
+# that same per-IP charge for no real benefit here, so this provisions the
+# minimum: one node, acting as both k3s server and the only worker, running
+# 2 app replicas for basic redundancy (see k8s/deployment.yaml).
 #
 # Prerequisites (on the machine you run this from):
 #   - AWS CLI v2, configured with credentials that can create EC2/VPC/SG/KeyPair
@@ -13,19 +21,15 @@
 # What it does:
 #   1. Looks up the default VPC + a subnet in it, and the latest Ubuntu 22.04 AMI
 #   2. Creates a key pair (saves the .pem locally, gitignored) and a security group
-#   3. Launches node-1 with user-data that installs k3s in server mode
-#   4. SSHes into node-1 to grab its node-token, then launches node-2 and
-#      node-3 with user-data that joins them as agents
-#   5. Prints the kubeconfig (with the public IP substituted in) to store as
-#      the GitHub Actions `KUBE_CONFIG` secret, plus the 3 node public IPs
+#   3. Launches the node with user-data that installs k3s in server mode
+#   4. SSHes in to fetch the kubeconfig (with the public IP substituted in)
 #
-# COST NOTE: AWS Free Tier gives 750 instance-hours/month TOTAL for eligible
-# instance types — not 750 hours *per* instance. Running all 3 nodes 24/7 is
-# ~2,190 hours/month, so ~1,440 hours/month fall outside the free tier and
-# bill at the (small) on-demand rate for INSTANCE_TYPE — a few dollars/month,
-# not zero. Use stop-cluster.sh / start-cluster.sh (in this same directory)
-# to shut the nodes down when you're not using them if you want to stay
-# closer to the free allowance.
+# COST NOTE: the ~$3.65/mo public-IP charge above is unavoidable for any
+# internet-facing AWS instance. Instance-hours themselves fit inside the
+# account's free-tier allowance (750 hrs/month) for a single always-on
+# t3.micro/t2.micro. Use stop-cluster.sh / start-cluster.sh (in this same
+# directory) if you want to avoid even the IP charge while not using it —
+# stopping releases the public IP, so it's billed only while running.
 #
 # Usage:
 #   chmod +x infra/aws/provision-k3s-cluster.sh
@@ -75,7 +79,7 @@ SG_ID=$(aws ec2 describe-security-groups --region "$REGION" \
 
 if [ "$SG_ID" = "None" ] || [ -z "$SG_ID" ]; then
   SG_ID=$(aws ec2 create-security-group --region "$REGION" \
-    --group-name "$SG_NAME" --description "k3s cluster for ${CLUSTER_NAME}" --vpc-id "$VPC_ID" \
+    --group-name "$SG_NAME" --description "k3s single-node cluster for ${CLUSTER_NAME}" --vpc-id "$VPC_ID" \
     --query 'GroupId' --output text)
 
   # SSH — restricted to your current IP only
@@ -90,31 +94,13 @@ if [ "$SG_ID" = "None" ] || [ -z "$SG_ID" ]; then
   # App traffic via k3s's built-in ServiceLB
   aws ec2 authorize-security-group-ingress --region "$REGION" --group-id "$SG_ID" \
     --protocol tcp --port 80 --cidr 0.0.0.0/0 >/dev/null
-
-  # Cluster-internal only: flannel VXLAN + kubelet, from other cluster nodes
-  aws ec2 authorize-security-group-ingress --region "$REGION" --group-id "$SG_ID" \
-    --protocol udp --port 8472 --source-group "$SG_ID" >/dev/null
-  aws ec2 authorize-security-group-ingress --region "$REGION" --group-id "$SG_ID" \
-    --protocol tcp --port 10250 --source-group "$SG_ID" >/dev/null
   echo "    Created ${SG_ID}"
 else
   echo "    Security group already exists, reusing ${SG_ID}"
 fi
 
-launch_node() {
-  local name="$1" user_data="$2"
-  aws ec2 run-instances --region "$REGION" \
-    --image-id "$AMI_ID" --instance-type "$INSTANCE_TYPE" \
-    --key-name "$KEY_NAME" --security-group-ids "$SG_ID" --subnet-id "$SUBNET_ID" \
-    --associate-public-ip-address \
-    --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=${name}},{Key=Cluster,Value=${CLUSTER_NAME}}]" \
-    --user-data "$user_data" \
-    --query 'Instances[0].InstanceId' --output text
-}
-
 wait_for_ssh_ready() {
-  local instance_id="$1"
-  aws ec2 wait instance-status-ok --region "$REGION" --instance-ids "$instance_id"
+  aws ec2 wait instance-status-ok --region "$REGION" --instance-ids "$1"
 }
 
 get_public_ip() {
@@ -122,82 +108,55 @@ get_public_ip() {
     --query 'Reservations[0].Instances[0].PublicIpAddress' --output text
 }
 
-get_private_ip() {
-  aws ec2 describe-instances --region "$REGION" --instance-ids "$1" \
-    --query 'Reservations[0].Instances[0].PrivateIpAddress' --output text
-}
-
 ssh_node() {
   local ip="$1"; shift
   ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i "$KEY_PATH" "ubuntu@${ip}" "$@"
 }
 
-echo "==> Launching node-1 (k3s server)"
-NODE1_USER_DATA='#!/bin/bash
+echo "==> Launching node (k3s server, single-node)"
+USER_DATA='#!/bin/bash
 curl -sfL https://get.k3s.io | sh -s - server --write-kubeconfig-mode 644'
-NODE1_ID=$(launch_node "${CLUSTER_NAME}-node-1" "$NODE1_USER_DATA")
-echo "    Instance: ${NODE1_ID}, waiting for it to boot and pass status checks..."
-wait_for_ssh_ready "$NODE1_ID"
-NODE1_PUBLIC_IP=$(get_public_ip "$NODE1_ID")
-NODE1_PRIVATE_IP=$(get_private_ip "$NODE1_ID")
-echo "    node-1 public=${NODE1_PUBLIC_IP} private=${NODE1_PRIVATE_IP}"
+NODE_ID=$(aws ec2 run-instances --region "$REGION" \
+  --image-id "$AMI_ID" --instance-type "$INSTANCE_TYPE" \
+  --key-name "$KEY_NAME" --security-group-ids "$SG_ID" --subnet-id "$SUBNET_ID" \
+  --associate-public-ip-address \
+  --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=${CLUSTER_NAME}-node},{Key=Cluster,Value=${CLUSTER_NAME}}]" \
+  --user-data "$USER_DATA" \
+  --query 'Instances[0].InstanceId' --output text)
+echo "    Instance: ${NODE_ID}, waiting for it to boot and pass status checks..."
+wait_for_ssh_ready "$NODE_ID"
+NODE_PUBLIC_IP=$(get_public_ip "$NODE_ID")
+echo "    node public IP: ${NODE_PUBLIC_IP}"
 
-echo "==> Waiting for k3s server to finish installing on node-1 (polling for node-token)"
+echo "==> Waiting for k3s to finish installing (polling for kubeconfig)"
 for i in $(seq 1 30); do
-  if ssh_node "$NODE1_PUBLIC_IP" "sudo test -f /var/lib/rancher/k3s/server/node-token" 2>/dev/null; then
+  if ssh_node "$NODE_PUBLIC_IP" "sudo test -f /etc/rancher/k3s/k3s.yaml" 2>/dev/null; then
     break
   fi
   echo "    still waiting... (${i}/30)"
   sleep 10
 done
-NODE_TOKEN=$(ssh_node "$NODE1_PUBLIC_IP" "sudo cat /var/lib/rancher/k3s/server/node-token")
-echo "    Got node token."
 
-launch_agent() {
-  local name="$1"
-  local user_data="#!/bin/bash
-curl -sfL https://get.k3s.io | K3S_URL=https://${NODE1_PRIVATE_IP}:6443 K3S_TOKEN=${NODE_TOKEN} sh -"
-  launch_node "$name" "$user_data"
-}
+echo "==> Node status:"
+ssh_node "$NODE_PUBLIC_IP" "sudo k3s kubectl get nodes -o wide"
 
-echo "==> Launching node-2 (k3s agent)"
-NODE2_ID=$(launch_agent "${CLUSTER_NAME}-node-2")
-echo "==> Launching node-3 (k3s agent)"
-NODE3_ID=$(launch_agent "${CLUSTER_NAME}-node-3")
-
-echo "    Waiting for node-2 and node-3 to boot..."
-wait_for_ssh_ready "$NODE2_ID"
-wait_for_ssh_ready "$NODE3_ID"
-NODE2_PUBLIC_IP=$(get_public_ip "$NODE2_ID")
-NODE3_PUBLIC_IP=$(get_public_ip "$NODE3_ID")
-
-echo "==> Waiting ~30s for agents to register with the cluster"
-sleep 30
-
-echo "==> Cluster nodes:"
-ssh_node "$NODE1_PUBLIC_IP" "sudo k3s kubectl get nodes -o wide"
-
-echo "==> Fetching kubeconfig (substituting node-1's public IP for 127.0.0.1)"
-KUBECONFIG_CONTENT=$(ssh_node "$NODE1_PUBLIC_IP" "sudo cat /etc/rancher/k3s/k3s.yaml" | sed "s/127.0.0.1/${NODE1_PUBLIC_IP}/")
+echo "==> Fetching kubeconfig (substituting node's public IP for 127.0.0.1)"
+KUBECONFIG_CONTENT=$(ssh_node "$NODE_PUBLIC_IP" "sudo cat /etc/rancher/k3s/k3s.yaml" | sed "s/127.0.0.1/${NODE_PUBLIC_IP}/")
 KUBECONFIG_PATH="${SCRIPT_DIR}/kubeconfig-${CLUSTER_NAME}.yaml"
 echo "$KUBECONFIG_CONTENT" > "$KUBECONFIG_PATH"
 echo "    Saved to ${KUBECONFIG_PATH} (gitignored — do not commit this file)"
 
 cat > "$STATE_FILE" <<EOF
 REGION=${REGION}
-NODE1_ID=${NODE1_ID}
-NODE2_ID=${NODE2_ID}
-NODE3_ID=${NODE3_ID}
-NODE1_PUBLIC_IP=${NODE1_PUBLIC_IP}
-NODE2_PUBLIC_IP=${NODE2_PUBLIC_IP}
-NODE3_PUBLIC_IP=${NODE3_PUBLIC_IP}
+NODE_ID=${NODE_ID}
+NODE_PUBLIC_IP=${NODE_PUBLIC_IP}
 SG_ID=${SG_ID}
 KEY_NAME=${KEY_NAME}
 EOF
 
 echo ""
 echo "════════════════════════════════════════════════════════════════════"
-echo " Cluster is up. Next steps:"
+echo " Node is up. Next steps:"
 echo ""
 echo " 1. Create the app-secrets Secret (fill in k8s/secrets.example.yaml,"
 echo "    save as k8s/secrets.yaml, then):"
@@ -205,10 +164,11 @@ echo "      KUBECONFIG=${KUBECONFIG_PATH} kubectl apply -f k8s/secrets.yaml"
 echo ""
 echo " 2. Add these as GitHub Actions repo secrets:"
 echo "      KUBE_CONFIG    = contents of ${KUBECONFIG_PATH}"
-echo "      PRODUCTION_URL = http://${NODE1_PUBLIC_IP}"
+echo "      PRODUCTION_URL = http://${NODE_PUBLIC_IP}"
 echo ""
 echo " 3. Push to main (or re-run the CD workflow) to deploy the app."
 echo ""
-echo " Node public IPs (any of these serves the load-balanced app on :80"
-echo " once deployed): ${NODE1_PUBLIC_IP}, ${NODE2_PUBLIC_IP}, ${NODE3_PUBLIC_IP}"
+echo " Estimated recurring cost: ~\$3.65/mo (the public IPv4 charge) as long"
+echo " as this instance keeps running — that floor is unavoidable for any"
+echo " internet-facing AWS instance. Use stop-cluster.sh when not in use."
 echo "════════════════════════════════════════════════════════════════════"
