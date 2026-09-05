@@ -8,7 +8,7 @@ import { prisma } from '@/lib/prisma';
 import { getSuiteForUser, recordSuiteRun, type TestRunToolCall } from '@/lib/testSuiteStore';
 import { getMockToolCatalog, type MockToolDefinition } from '@/lib/mockToolCatalog';
 import { getConfiguredOpenAIModels } from '@/lib/openaiModels';
-import { getActiveOpenAIKey } from '@/lib/openaiKeys';
+import { getActiveOpenAIKey, getActiveOpenAIKeyMetadata, rotateOpenAIKey } from '@/lib/openaiKeys';
 import { BudgetTracker, DEFAULT_BUDGETS, type BudgetConfig } from '@/lib/budgetValidator';
 import { executeMockTool } from '@/lib/mockToolExecution';
 
@@ -28,6 +28,19 @@ function requireEnv(name: string) {
     throw new Error(`Missing required environment variable: ${name}`);
   }
   return value;
+}
+
+function isRateLimitOrQuotaError(err: unknown): boolean {
+  const status = (err as { status?: number; response?: { status?: number } } | undefined)?.status
+    ?? (err as { response?: { status?: number } } | undefined)?.response?.status;
+  if (status === 429) return true;
+
+  const code = (err as { code?: string; error?: { code?: string } } | undefined)?.code
+    ?? (err as { error?: { code?: string } } | undefined)?.error?.code;
+  if (code === 'insufficient_quota' || code === 'rate_limit_exceeded') return true;
+
+  const message = (err as Error | undefined)?.message ?? '';
+  return /\b429\b/.test(message) || /insufficient_quota|rate.?limit/i.test(message);
 }
 
 type OpenAITool = {
@@ -162,13 +175,6 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: (err as Error).message }, { status: 500 });
   }
 
-  let activeApiKey: string;
-  try {
-    activeApiKey = getActiveOpenAIKey();
-  } catch (err) {
-    return NextResponse.json({ error: (err as Error).message }, { status: 500 });
-  }
-
   const requestedModel = options.model?.trim();
   if (requestedModel && !configuredModels.models.includes(requestedModel)) {
     return NextResponse.json({ error: `Model "${requestedModel}" is not configured.` }, { status: 400 });
@@ -176,36 +182,41 @@ export async function POST(req: Request) {
 
   const selectedModel = requestedModel ?? configuredModels.defaultModel;
 
-  let model: ChatOpenAI;
-  try {
-    model = new ChatOpenAI({
-      apiKey: activeApiKey,
+  const suite = getSuiteForUser(user.id);
+  const toolDefs = getMockToolCatalog();
+  const toolMap = new Map(toolDefs.map((def) => [def.id, def]));
+  const openaiTools = toolDefs.map(mapToOpenAITool);
+
+  function buildModelWithTools(apiKey: string) {
+    const model = new ChatOpenAI({
+      apiKey,
       model: selectedModel,
       temperature: options.temperature ?? 0.3,
       configuration: {
         baseURL: requireEnv('OPENAI_BASE_URL'),
       },
     });
+
+    // ----------------------------------------------------------------------
+    // FIX: We explicitly disable the eslint rule for 'any' just for this block
+    // so we can satisfy the Compiler (which demands 'bind' exist) and the Linter.
+    // ----------------------------------------------------------------------
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const flexibleModel = model as any;
+
+    return flexibleModel.bindTools
+      ? flexibleModel.bindTools(openaiTools)
+      : flexibleModel.bind({ tools: openaiTools });
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let modelWithTools: any;
+  try {
+    modelWithTools = buildModelWithTools(getActiveOpenAIKey());
   } catch (err) {
     return NextResponse.json({ error: (err as Error).message }, { status: 500 });
   }
-
-  const suite = getSuiteForUser(user.id);
-  const toolDefs = getMockToolCatalog();
-  const toolMap = new Map(toolDefs.map((def) => [def.id, def]));
-  const openaiTools = toolDefs.map(mapToOpenAITool);
-  
-  // ----------------------------------------------------------------------
-  // FIX: We explicitly disable the eslint rule for 'any' just for this block
-  // so we can satisfy the Compiler (which demands 'bind' exist) and the Linter.
-  // ----------------------------------------------------------------------
-  
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const flexibleModel = model as any;
-  
-  const modelWithTools = flexibleModel.bindTools 
-    ? flexibleModel.bindTools(openaiTools) 
-    : flexibleModel.bind({ tools: openaiTools });
 
   let workspaceTools: { id: string; name: string; description: string | null }[] = [];
   try {
@@ -237,6 +248,38 @@ export async function POST(req: Request) {
     : DEFAULT_BUDGETS.DAILY_RUN; // Default to $25 budget if not specified
 
   const budgetTracker = new BudgetTracker(budgetConfig);
+
+  async function invokeModelWithRotation(messages: BaseMessage[], writer: WritableStreamDefaultWriter<Uint8Array>) {
+    const totalKeys = getActiveOpenAIKeyMetadata().total;
+    let lastError: unknown;
+
+    for (let attempt = 0; attempt < totalKeys; attempt += 1) {
+      try {
+        return await modelWithTools.invoke(messages);
+      } catch (err) {
+        lastError = err;
+        if (!isRateLimitOrQuotaError(err) || attempt === totalKeys - 1) {
+          throw err;
+        }
+
+        const { metadata, rotated } = rotateOpenAIKey();
+        if (!rotated) {
+          throw err;
+        }
+
+        modelWithTools = buildModelWithTools(getActiveOpenAIKey());
+        await writeEvent(writer, {
+          type: 'key-rotated',
+          activeKeyEnvVar: metadata.envVar,
+          activeKeyIndex: metadata.index,
+          totalApiKeys: metadata.total,
+          reason: (err as Error).message ?? 'Rate limit or quota error.',
+        });
+      }
+    }
+
+    throw lastError;
+  }
 
   const streamRun = async () => {
     const transcript: { role: 'system' | 'user' | 'assistant' | 'tool'; content: string }[] = [];
@@ -286,7 +329,7 @@ export async function POST(req: Request) {
         }
 
         // Make the model call
-        const aiMessage = await modelWithTools.invoke(messages);
+        const aiMessage = await invokeModelWithRotation(messages, writer);
         lastAssistantMessage = aiMessage;
         const content = stringifyMessageContent(aiMessage.content);
         

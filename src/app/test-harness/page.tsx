@@ -76,6 +76,13 @@ type RunStreamEvent =
       error: string;
     }
   | {
+      type: 'key-rotated';
+      activeKeyEnvVar: string;
+      activeKeyIndex: number;
+      totalApiKeys: number;
+      reason: string;
+    }
+  | {
       type: 'run-complete';
       run: TestRunRecord;
       mockTools?: MockToolDefinition[];
@@ -172,6 +179,7 @@ export default function TestHarnessPage() {
   const handleRunSuite = useCallback(async () => {
     setRunning(true);
     setRunError(null);
+    setKeyRotationMessage(null);
     setLiveToolCalls({});
     setLiveRunStartedAt(null);
 
@@ -231,6 +239,14 @@ export default function TestHarnessPage() {
         case 'run-error':
           setRunError(event.error ?? 'Run failed.');
           setRunning(false);
+          break;
+        case 'key-rotated':
+          setActiveKeyEnvVar(event.activeKeyEnvVar);
+          setActiveKeyIndex(event.activeKeyIndex);
+          setTotalApiKeys(event.totalApiKeys);
+          setKeyRotationMessage(
+            `Auto-rotated to ${event.activeKeyEnvVar} (${event.activeKeyIndex + 1}/${event.totalApiKeys}) after: ${event.reason}`,
+          );
           break;
         case 'run-complete':
           setRuns((prev) => [event.run, ...prev.filter((run) => run.id !== event.run.id)]);

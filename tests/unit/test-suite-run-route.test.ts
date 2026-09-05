@@ -19,9 +19,16 @@ vi.mock('@/lib/openaiModels', () => ({
   }),
 }));
 
-vi.mock('@/lib/openaiKeys', () => ({
-  getActiveOpenAIKey: () => 'sk-test',
+const openaiKeysMocks = vi.hoisted(() => ({
+  getActiveOpenAIKey: vi.fn(() => 'sk-test'),
+  getActiveOpenAIKeyMetadata: vi.fn(() => ({ envVar: 'OPENAI_API_KEY', index: 0, total: 1 })),
+  rotateOpenAIKey: vi.fn(() => ({
+    metadata: { envVar: 'OPENAI_API_KEY', index: 0, total: 1 },
+    rotated: false,
+  })),
 }));
+
+vi.mock('@/lib/openaiKeys', () => openaiKeysMocks);
 
 vi.mock('@/lib/auth', () => ({
   getScopedUser: vi.fn(),
@@ -75,6 +82,16 @@ describe('POST /api/test-suite/run (mocked model)', () => {
     } as Awaited<ReturnType<typeof getScopedUser>>);
     prismaMocks.membershipFindFirst.mockResolvedValue({ workspaceId: 'ws-1' });
     prismaMocks.toolFindMany.mockResolvedValue([]);
+    openaiKeysMocks.getActiveOpenAIKey.mockReturnValue('sk-test');
+    openaiKeysMocks.getActiveOpenAIKeyMetadata.mockReturnValue({
+      envVar: 'OPENAI_API_KEY',
+      index: 0,
+      total: 1,
+    });
+    openaiKeysMocks.rotateOpenAIKey.mockReturnValue({
+      metadata: { envVar: 'OPENAI_API_KEY', index: 0, total: 1 },
+      rotated: false,
+    });
     invokeMock
       .mockResolvedValueOnce({
         content: '',
@@ -201,6 +218,80 @@ describe('POST /api/test-suite/run (mocked model)', () => {
       | undefined;
     expect(err?.budgetExceeded).toBe(true);
     expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it('auto-rotates to the next key and retries after a 429 quota error', async () => {
+    invokeMock.mockReset();
+    const quotaError = Object.assign(new Error('429 You have no credits remaining.'), { status: 429 });
+    invokeMock
+      .mockRejectedValueOnce(quotaError)
+      .mockResolvedValueOnce({ content: 'Planned after rotation.', tool_calls: [] });
+
+    openaiKeysMocks.getActiveOpenAIKeyMetadata.mockReturnValue({
+      envVar: 'OPENAI_API_KEY',
+      index: 0,
+      total: 3,
+    });
+    openaiKeysMocks.rotateOpenAIKey.mockReturnValue({
+      metadata: { envVar: 'OPENAI_API_KEY_1', index: 1, total: 3 },
+      rotated: true,
+    });
+
+    const req = new Request('http://localhost:3000/api/test-suite/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+
+    const res = await POST(req);
+    const events = await readNdjsonStream(res.body!);
+    const types = events.map((e) => e.type as string);
+
+    expect(types).toContain('key-rotated');
+    expect(types).not.toContain('run-error');
+    expect(invokeMock).toHaveBeenCalledTimes(2);
+
+    const rotated = events.find((e) => e.type === 'key-rotated') as
+      | { activeKeyEnvVar?: string; activeKeyIndex?: number; totalApiKeys?: number }
+      | undefined;
+    expect(rotated?.activeKeyEnvVar).toBe('OPENAI_API_KEY_1');
+    expect(rotated?.activeKeyIndex).toBe(1);
+    expect(rotated?.totalApiKeys).toBe(3);
+
+    const complete = events.find((e) => e.type === 'run-complete') as
+      | { run?: { status?: string } }
+      | undefined;
+    expect(complete?.run?.status).toBe('success');
+  });
+
+  it('fails the run once all rotated keys are exhausted on repeated 429 errors', async () => {
+    invokeMock.mockReset();
+    const quotaError = Object.assign(new Error('429 You have no credits remaining.'), { status: 429 });
+    invokeMock.mockRejectedValue(quotaError);
+
+    openaiKeysMocks.getActiveOpenAIKeyMetadata.mockReturnValue({
+      envVar: 'OPENAI_API_KEY',
+      index: 0,
+      total: 2,
+    });
+    openaiKeysMocks.rotateOpenAIKey.mockReturnValue({
+      metadata: { envVar: 'OPENAI_API_KEY_1', index: 1, total: 2 },
+      rotated: true,
+    });
+
+    const req = new Request('http://localhost:3000/api/test-suite/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+
+    const res = await POST(req);
+    const events = await readNdjsonStream(res.body!);
+    const types = events.map((e) => e.type as string);
+
+    expect(types).toContain('key-rotated');
+    expect(types).toContain('run-error');
+    expect(invokeMock).toHaveBeenCalledTimes(2);
   });
 
   it('parses string tool args invalid JSON without throwing', async () => {
