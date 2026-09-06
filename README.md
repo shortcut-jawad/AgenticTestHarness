@@ -202,6 +202,28 @@ docker compose up --build
 
 The app will be available at `http://localhost:3000` (configurable via `APP_PORT`).
 
+### Deploying to AWS (k3s)
+
+Production runs on a single-node self-managed [k3s](https://k3s.io) cluster on one free-tier-eligible AWS EC2 instance, running 2 app replicas for basic redundancy. k3s's built-in ServiceLB load-balances between them — there's no AWS ELB/ALB involved.
+
+This app has negligible traffic, and AWS has no way to run an internet-facing instance at literal $0 (see cost note below), so this intentionally provisions the minimum — one node — rather than paying that same unavoidable per-IP charge multiple times over for no real benefit.
+
+```bash
+# One-time: provisions the VPC security group, the EC2 instance, and k3s
+./infra/aws/provision-k3s-cluster.sh
+
+# Day to day: stop the node when not in use, start it again later
+./infra/aws/stop-cluster.sh
+./infra/aws/start-cluster.sh
+
+# Permanently tear the cluster down
+./infra/aws/teardown-cluster.sh
+```
+
+After provisioning, create the `app-secrets` Kubernetes Secret (see `k8s/secrets.example.yaml`) and set the `KUBE_CONFIG` / `PRODUCTION_URL` GitHub Actions secrets as printed by the provisioning script. From then on, every push to `main` that passes CI is deployed automatically by `cd.yml`.
+
+**Cost note:** instance-hours for a single always-on t3.micro/t2.micro fit inside AWS's free-tier allowance (750 hrs/month). The one unavoidable cost is the public IPv4 address itself — as of AWS's Feb 2024 pricing change, every public IPv4 costs ~$0.005/hr (~$3.65/month) even while just attached to a running instance, with no free-tier exception. That's the realistic floor for any internet-facing AWS setup, single node or otherwise. Run `stop-cluster.sh` when you're not using it to release the IP and avoid even that charge while idle.
+
 ### Database Setup
 
 ```bash
@@ -226,9 +248,11 @@ Three GitHub Actions workflows:
 
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
-| `ci.yml` | Push to `main`, PRs | Lint and build validation |
-| `cd.yml` | After successful CI | Vercel deployment |
+| `ci.yml` | Push to `main`, PRs | Lint, test, and build validation |
+| `cd.yml` | After successful CI on `main` | Build + push Docker image, deploy to the AWS k3s cluster, health-check, auto-rollback |
 | `build.yml` | Push/PR | SonarQube code quality scan |
+
+(Vercel deploys its own preview/production builds automatically via its GitHub App integration — that's separate from these workflows and untouched by them.)
 
 ## API Routes
 

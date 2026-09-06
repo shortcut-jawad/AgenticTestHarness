@@ -1,23 +1,17 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # cd.yml — Continuous Deployment
 #
+# Target: a self-managed 3-node k3s cluster on AWS EC2 (see infra/aws/ for
+# how the cluster is provisioned). k3s's built-in ServiceLB does the load
+# balancing across the 3 nodes/replicas — there is no AWS ELB/ALB in the
+# loop, so PRODUCTION_URL just needs to point at any one of the 3 node
+# public IPs (or a DNS name you've pointed at them).
+#
 # Runs on: CI workflow completes successfully on main branch only
 # Jobs:
 #   1. push-image      → Tag with git SHA + latest, push to Docker Hub
-#   2. deploy          → kubectl apply to Kubernetes cluster
-#   3. health-check    → Verify deployment is live after rollout
-#
-# From your version (kept):
-#   + workflow_run trigger (only deploys after CI passes — correct pattern)
-#   + Docker Hub login + push
-#   + kubectl apply
-#
-# Fixed/added:
-#   - actions/checkout@v3 → v4
-#   + Image tagged with git SHA (not just :latest) — enables rollback
-#   + kubectl rollout status (waits for pods to be ready before health check)
-#   + Post-deploy health check
-#   + deploy only runs on main branch (your version deployed on any branch that ran CI)
+#   2. deploy          → kubectl apply to the k3s cluster
+#   3. health-check    → Verify deployment is live after rollout, roll back on failure
 # ─────────────────────────────────────────────────────────────────────────────
 name: CD - Deploy to Kubernetes
 
@@ -42,7 +36,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4    # was v3
+        uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -65,9 +59,9 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # ── Job 2: Deploy to Kubernetes ───────────────────────────────────────────
+  # ── Job 2: Deploy to the k3s cluster ──────────────────────────────────────
   deploy:
-    name: Deploy to Kubernetes
+    name: Deploy to k3s (AWS EC2)
     runs-on: ubuntu-latest
     needs: push-image
 
@@ -84,21 +78,24 @@ jobs:
           echo "${{ secrets.KUBE_CONFIG }}" > $HOME/.kube/config
           chmod 600 $HOME/.kube/config   # Secure the credentials file
 
-      - name: Update image tag in deployment
-        # Patch the deployment to use the exact SHA-tagged image
-        # This is safer than re-applying the yaml (which may still reference :latest)
-        run: |
-          kubectl set image deployment/nextjs-app \
-            nextjs-app=${{ env.IMAGE_NAME }}:${{ github.event.workflow_run.head_sha }}
-
-      - name: Apply any updated K8s manifests
+      - name: Apply K8s manifests (creates resources on first run, updates them after)
         run: |
           kubectl apply -f k8s/deployment.yaml
           kubectl apply -f k8s/service.yaml
 
+      - name: Pin deployment to the exact SHA-tagged image
+        # Done after apply so this works whether the Deployment was just
+        # created (still on :latest) or already existed.
+        run: |
+          kubectl set image deployment/nextjs-app \
+            nextjs-app=${{ env.IMAGE_NAME }}:${{ github.event.workflow_run.head_sha }}
+
       - name: Wait for rollout to complete
-        # Blocks until all pods are running the new image — or fails after 3 min
+        # Blocks until all 3 replicas are running the new image — or fails after 3 min
         run: kubectl rollout status deployment/nextjs-app --timeout=180s
+
+      - name: Show pod distribution across nodes
+        run: kubectl get pods -o wide -l app=nextjs-app
 
   # ── Job 3: Post-deployment health check ───────────────────────────────────
   health-check:
@@ -107,7 +104,7 @@ jobs:
     needs: deploy
 
     steps:
-      - name: Wait for ingress/DNS to propagate
+      - name: Wait for ServiceLB to route to the new pods
         run: sleep 15
 
       - name: Check /api/health
@@ -119,8 +116,20 @@ jobs:
           fi
           echo "Health check PASSED — deployment of ${{ github.event.workflow_run.head_sha }} is live"
 
+      - name: Setup kubectl (for rollback)
+        if: failure()
+        uses: azure/setup-kubectl@v3
+
+      - name: Configure kubeconfig (for rollback)
+        if: failure()
+        run: |
+          mkdir -p $HOME/.kube
+          echo "${{ secrets.KUBE_CONFIG }}" > $HOME/.kube/config
+          chmod 600 $HOME/.kube/config
+
       - name: Rollback on failure
         if: failure()
         run: |
           echo "Health check failed — rolling back deployment"
           kubectl rollout undo deployment/nextjs-app
+          kubectl rollout status deployment/nextjs-app --timeout=180s
