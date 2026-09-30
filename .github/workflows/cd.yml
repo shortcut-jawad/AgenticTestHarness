@@ -1,25 +1,24 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# cd.yml — Continuous Deployment
+# cd.yml — Continuous Deployment (Path 2: Docker + Kubernetes, self-hosted)
 #
-# Target: a self-managed 3-node k3s cluster on AWS EC2 (see infra/aws/ for
-# how the cluster is provisioned). k3s's built-in ServiceLB does the load
-# balancing across the 3 nodes/replicas — there is no AWS ELB/ALB in the
-# loop, so PRODUCTION_URL just needs to point at any one of the 3 node
-# public IPs (or a DNS name you've pointed at them).
+# Production traffic is served by Vercel (Path 1), which deploys itself via
+# its own GitHub App integration — that path is untouched by this file.
 #
-# Runs on: CI workflow completes successfully on main branch only
+# This workflow deploys the Docker/Kubernetes path instead: whatever cluster
+# the KUBE_CONFIG secret points at (a local kind cluster, the infra/aws/
+# k3s cluster, or any other Kubernetes cluster). It's manual, not automatic
+# on push, because Path 2 isn't live anywhere by default — trigger it
+# yourself once you actually have a cluster's KUBE_CONFIG secret set.
+#
 # Jobs:
 #   1. push-image      → Tag with git SHA + latest, push to Docker Hub
-#   2. deploy          → kubectl apply to the k3s cluster
+#   2. deploy          → kubectl apply to whichever cluster KUBE_CONFIG points at
 #   3. health-check    → Verify deployment is live after rollout, roll back on failure
 # ─────────────────────────────────────────────────────────────────────────────
 name: CD - Deploy to Kubernetes
 
 on:
-  workflow_run:
-    workflows: ["CI"]           # Must match the `name:` field in ci.yml exactly
-    types: [completed]
-    branches: [main]            # Only deploy from main, not feature branches
+  workflow_dispatch: {}
 
 env:
   IMAGE_NAME: ${{ secrets.DOCKER_USERNAME }}/nextjs-app
@@ -29,10 +28,6 @@ jobs:
   push-image:
     name: Push Docker Image
     runs-on: ubuntu-latest
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
-
-    outputs:
-      image-tag: ${{ github.event.workflow_run.head_sha }}
 
     steps:
       - name: Checkout code
@@ -54,14 +49,14 @@ jobs:
           push: true
           # Two tags: SHA for traceability/rollback, latest for convenience
           tags: |
-            ${{ env.IMAGE_NAME }}:${{ github.event.workflow_run.head_sha }}
+            ${{ env.IMAGE_NAME }}:${{ github.sha }}
             ${{ env.IMAGE_NAME }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # ── Job 2: Deploy to the k3s cluster ──────────────────────────────────────
+  # ── Job 2: Deploy to Kubernetes ───────────────────────────────────────────
   deploy:
-    name: Deploy to k3s (AWS EC2)
+    name: Deploy to Kubernetes
     runs-on: ubuntu-latest
     needs: push-image
 
@@ -87,12 +82,12 @@ jobs:
         # Done after apply so this works whether the Deployment was just
         # created (still on :latest) or already existed.
         run: |
-          kubectl set image deployment/nextjs-app \
-            nextjs-app=${{ env.IMAGE_NAME }}:${{ github.event.workflow_run.head_sha }}
+          kubectl set image deployment/nextjs-deployment \
+            nextjs-app=${{ env.IMAGE_NAME }}:${{ github.sha }}
 
       - name: Wait for rollout to complete
-        # Blocks until all 3 replicas are running the new image — or fails after 3 min
-        run: kubectl rollout status deployment/nextjs-app --timeout=180s
+        # Blocks until all replicas are running the new image — or fails after 3 min
+        run: kubectl rollout status deployment/nextjs-deployment --timeout=180s
 
       - name: Show pod distribution across nodes
         run: kubectl get pods -o wide -l app=nextjs-app
@@ -104,7 +99,7 @@ jobs:
     needs: deploy
 
     steps:
-      - name: Wait for ServiceLB to route to the new pods
+      - name: Wait for the Service to route to the new pods
         run: sleep 15
 
       - name: Check /api/health
@@ -114,7 +109,7 @@ jobs:
             echo "Health check FAILED — got HTTP $RESPONSE from ${{ secrets.PRODUCTION_URL }}/api/health"
             exit 1
           fi
-          echo "Health check PASSED — deployment of ${{ github.event.workflow_run.head_sha }} is live"
+          echo "Health check PASSED — deployment of ${{ github.sha }} is live"
 
       - name: Setup kubectl (for rollback)
         if: failure()
@@ -131,5 +126,5 @@ jobs:
         if: failure()
         run: |
           echo "Health check failed — rolling back deployment"
-          kubectl rollout undo deployment/nextjs-app
-          kubectl rollout status deployment/nextjs-app --timeout=180s
+          kubectl rollout undo deployment/nextjs-deployment
+          kubectl rollout status deployment/nextjs-deployment --timeout=180s

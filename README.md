@@ -2,6 +2,56 @@
 
 A full-stack platform for testing, evaluating, and benchmarking autonomous AI agents. Upload agent run logs, parse them through an adapter-based ingestion pipeline, and evaluate agent performance using a multi-model LLM judging panel -- all from a single dashboard.
 
+## Architecture
+
+```mermaid
+flowchart TD
+    Browser([Browser])
+
+    subgraph vercel[Vercel application runtime]
+        direction TB
+        API[Next.js API routes<br/>JWT auth middleware]
+        Prisma[Prisma ORM<br/>Typed Postgres client]
+        API --> Prisma
+    end
+
+    subgraph ai[Third-party AI providers]
+        direction TB
+        OpenAI[OpenAI<br/>LangChain, key rotation]
+        Gemini[Google Gemini<br/>Evaluation judge]
+        Groq[Groq<br/>Judging panel]
+    end
+
+    subgraph supabase[Supabase - managed Postgres]
+        Postgres[(Postgres DB)]
+    end
+
+    subgraph internal[Also in this app]
+        direction TB
+        MockAPIs[Mock tool APIs]
+        LogParser[Log parser]
+        JudgePanel[Judge panel]
+    end
+
+    Browser --> API
+    API -. LLM calls .-> ai
+    Prisma --> Postgres
+
+    classDef primary fill:#E6F1FB,stroke:#185FA5,color:#042C53;
+    classDef external fill:#FAECE7,stroke:#993C1D,color:#4A1B0C;
+    classDef data fill:#E1F5EE,stroke:#0F6E56,color:#04342C;
+    classDef support fill:#EEEDFE,stroke:#534AB7,color:#26215C;
+    classDef boundary fill:none,stroke:#888780,stroke-dasharray: 4 3;
+
+    class API,Prisma primary
+    class OpenAI,Gemini,Groq external
+    class Postgres data
+    class MockAPIs,LogParser,JudgePanel support
+    class vercel,ai,supabase,internal boundary
+```
+
+The primary request path is browser -> authenticated Next.js API routes -> Prisma -> Supabase Postgres. Dashed boxes are trust/deployment boundaries: the app's own runtime, Supabase's managed database, and the third-party LLM providers it calls out to. The mock tool catalog, log parser, and judging panel are other routes inside the same app, shown separately here just to keep the primary path readable.
+
 ## Tech Stack
 
 | Layer | Technology |
@@ -17,8 +67,8 @@ A full-stack platform for testing, evaluating, and benchmarking autonomous AI ag
 | Validation | Zod v4 |
 | Charts | Recharts |
 | PDF Export | jsPDF + html2canvas |
-| CI/CD | GitHub Actions (lint, build, SonarQube, Vercel deploy) |
-| Containerization | Docker (multi-stage Node 20 Alpine) |
+| CI/CD | GitHub Actions (lint, test, build, SonarQube) + Vercel auto-deploy (production) + manual Docker/K8s deploy (self-hosted) |
+| Containerization | Docker (multi-stage Node 20 Alpine), Kubernetes |
 
 ## Features
 
@@ -194,36 +244,6 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000) in your browser.
 
-### Running with Docker
-
-```bash
-docker compose up --build
-```
-
-The app will be available at `http://localhost:3000` (configurable via `APP_PORT`).
-
-### Deploying to AWS (k3s)
-
-Production runs on a single-node self-managed [k3s](https://k3s.io) cluster on one free-tier-eligible AWS EC2 instance, running 2 app replicas for basic redundancy. k3s's built-in ServiceLB load-balances between them — there's no AWS ELB/ALB involved.
-
-This app has negligible traffic, and AWS has no way to run an internet-facing instance at literal $0 (see cost note below), so this intentionally provisions the minimum — one node — rather than paying that same unavoidable per-IP charge multiple times over for no real benefit.
-
-```bash
-# One-time: provisions the VPC security group, the EC2 instance, and k3s
-./infra/aws/provision-k3s-cluster.sh
-
-# Day to day: stop the node when not in use, start it again later
-./infra/aws/stop-cluster.sh
-./infra/aws/start-cluster.sh
-
-# Permanently tear the cluster down
-./infra/aws/teardown-cluster.sh
-```
-
-After provisioning, create the `app-secrets` Kubernetes Secret (see `k8s/secrets.example.yaml`) and set the `KUBE_CONFIG` / `PRODUCTION_URL` GitHub Actions secrets as printed by the provisioning script. From then on, every push to `main` that passes CI is deployed automatically by `cd.yml`.
-
-**Cost note:** instance-hours for a single always-on t3.micro/t2.micro fit inside AWS's free-tier allowance (750 hrs/month). The one unavoidable cost is the public IPv4 address itself — as of AWS's Feb 2024 pricing change, every public IPv4 costs ~$0.005/hr (~$3.65/month) even while just attached to a running instance, with no free-tier exception. That's the realistic floor for any internet-facing AWS setup, single node or otherwise. Run `stop-cluster.sh` when you're not using it to release the IP and avoid even that charge while idle.
-
 ### Database Setup
 
 ```bash
@@ -242,17 +262,53 @@ Two server-side modules handle parsing and judging:
 
 - **`src/lib/judger.ts`** -- Multi-model evaluation panel using 6 free-tier Groq models (llama-3.3-70b, llama-3.1-8b, compound-mini, compound, llama-4-scout, qwen3-32b) plus a verifier model. Produces per-dimension scorecards with reasoning, evidence, and confidence scores via median-based adjudication. Supports custom rubrics.
 
+## Deployment
+
+There are two independent deployment paths. **Path 1 (Vercel) is what's actually live today.** Path 2 (Docker + Kubernetes) is a complete, working implementation kept in-source and ready to run — for local demos now, or for a self-hosted/customer deployment later — but it isn't what serves production traffic.
+
+### Path 1: Vercel (current production)
+
+The live app runs on Vercel, deployed automatically from this repo via Vercel's GitHub App integration — every push to `main` builds and deploys, and PRs get their own preview deployments. There's no custom workflow file for this; it's entirely managed by Vercel outside of `.github/workflows/`.
+
+### Path 2: Docker + Kubernetes (self-hosted)
+
+The same app, containerized and deployed to any Kubernetes cluster — this path is not currently serving traffic anywhere, but it's fully implemented and tested.
+
+**Local demo** (no cloud account, no cost) — a 3-node [kind](https://kind.sigs.k8s.io) cluster running the app from a locally-built image against an in-cluster Postgres:
+
+```bash
+./infra/local/setup-local-cluster.sh   # builds the image, stands up the cluster, deploys
+./infra/local/teardown-local-cluster.sh # tears it down when you're done
+```
+
+**Cloud, self-hosted** — scripts to provision a real Kubernetes target (currently: a single free-tier AWS EC2 instance running [k3s](https://k3s.io)):
+
+```bash
+./infra/aws/provision-k3s-cluster.sh
+./infra/aws/stop-cluster.sh   # release the node (and its billed public IP) when idle
+./infra/aws/start-cluster.sh
+./infra/aws/teardown-cluster.sh
+```
+
+Either way, deployment uses the same `k8s/deployment.yaml` / `k8s/service.yaml` manifests — create the `app-secrets` Secret first (see `k8s/secrets.example.yaml`), then `kubectl apply -f k8s/`. For the cloud path, set the `KUBE_CONFIG` / `PRODUCTION_URL` GitHub secrets from the provisioning script's output to let `cd.yml` deploy to it.
+
+**Cost note (cloud path only):** AWS Free Tier covers 750 instance-hours/month *total*, not per instance, and every public IPv4 address costs ~$0.005/hr (~$3.65/month) even while just attached to a running instance, with no free-tier exception since AWS's Feb 2024 pricing change. That's the realistic floor for any internet-facing AWS setup. Run `stop-cluster.sh` when idle to avoid it.
+
 ## CI/CD
 
-Three GitHub Actions workflows:
+CI/CD also splits along the same two paths:
+
+**Path 1 (Vercel):** no workflow file — Vercel builds and deploys on every push via its own GitHub App integration, independent of everything below.
+
+**Path 2 (Docker + Kubernetes) and shared quality gates** — three GitHub Actions workflows:
 
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
-| `ci.yml` | Push to `main`, PRs | Lint, test, and build validation |
-| `cd.yml` | After successful CI on `main` | Build + push Docker image, deploy to the AWS k3s cluster, health-check, auto-rollback |
+| `ci.yml` | Push to `main`, PRs | Lint, test, and build validation — **this must stay green**; it's the gate for both deployment paths |
 | `build.yml` | Push/PR | SonarQube code quality scan |
+| `cd.yml` | Manual (`workflow_dispatch`) | Build + push Docker image, deploy to whichever Kubernetes cluster `KUBE_CONFIG` points at, health-check, auto-rollback |
 
-(Vercel deploys its own preview/production builds automatically via its GitHub App integration — that's separate from these workflows and untouched by them.)
+`cd.yml` is deliberately manual, not automatic on push — Path 2 isn't live anywhere right now, so nothing should try to deploy to it on every commit. Trigger it yourself (Actions tab -> "CD - Deploy to Kubernetes" -> Run workflow) once you have a real cluster's `KUBE_CONFIG` secret set.
 
 ## API Routes
 
