@@ -1,12 +1,17 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# build.yml — Static Analysis (SonarQube)
+# build.yml — Static Analysis (SonarQube Cloud)
 #
 # Runs on: every push to main, every PR
 # What it does: SonarQube code quality + security scan
 #
-# Fix from your version:
-#   - ubuntu-latest instead of macos-latest (10x cheaper GitHub Actions minutes)
-#   - fetch-depth: 0 kept (SonarQube needs full git history for blame/coverage)
+# This is a third integrated path, same idea as the Docker/Kubernetes one in
+# cd.yml: fully wired up in source, but inert until someone actually pays
+# for and configures a SonarQube Cloud organization. Until the SONAR_TOKEN
+# secret exists, the scan step is skipped (not failed) — this workflow will
+# always report success either way, so it never blocks CI on an
+# unconfigured third-party service. Add SONAR_TOKEN as a repo secret (and
+# update sonar-project.properties with your own org/project key) to
+# activate the real scan — no other changes needed.
 # ─────────────────────────────────────────────────────────────────────────────
 name: Build - Static Analysis
 
@@ -19,7 +24,7 @@ on:
 jobs:
   sonarqube:
     name: SonarQube Scan
-    runs-on: ubuntu-latest        # was macos-latest — ubuntu is cheaper & faster
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
@@ -27,7 +32,18 @@ jobs:
         with:
           fetch-depth: 0          # Full history required for SonarQube blame analysis
 
+      - name: Check whether SonarQube Cloud is configured
+        id: check
+        run: |
+          if [ -n "${{ secrets.SONAR_TOKEN }}" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::SonarQube Cloud path is integrated but inactive — SONAR_TOKEN secret isn't set. Skipping the scan instead of failing CI. Add the secret (and your org/project key in sonar-project.properties) to activate it."
+          fi
+
       - name: SonarQube Scan
+        if: steps.check.outputs.configured == 'true'
         uses: SonarSource/sonarqube-scan-action@v6
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
