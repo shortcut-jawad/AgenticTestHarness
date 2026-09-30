@@ -3,7 +3,10 @@ import { jwtVerify } from 'jose';
 
 const AUTH_COOKIE = '__auth';
 const PUBLIC_PAGE_PATHS = new Set<string>(['/login', '/signup']);
-const PUBLIC_API_PREFIXES = ['/api/auth', '/api/mock']; 
+const PUBLIC_API_PREFIXES = ['/api/auth', '/api/mock'];
+// Exact-match only — health checks (Docker HEALTHCHECK, k8s liveness/readiness
+// probes, the CD pipeline's post-deploy check) hit this with no credentials.
+const PUBLIC_API_EXACT_PATHS = new Set<string>(['/api/health']);
 const SESSION_ONLY_API_PREFIXES = ['/api/account'];
 
 function isStaticAsset(pathname: string) {
@@ -19,7 +22,7 @@ function isStaticAsset(pathname: string) {
 }
 
 function isPublicApi(pathname: string) {
-  return PUBLIC_API_PREFIXES.some((p) => pathname.startsWith(p));
+  return PUBLIC_API_PREFIXES.some((p) => pathname.startsWith(p)) || PUBLIC_API_EXACT_PATHS.has(pathname);
 }
 
 function isSessionOnlyApi(pathname: string) {

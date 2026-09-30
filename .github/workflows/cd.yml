@@ -1,31 +1,24 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# cd.yml — Continuous Deployment
+# cd.yml — Continuous Deployment (Path 2: Docker + Kubernetes, self-hosted)
 #
-# Runs on: CI workflow completes successfully on main branch only
+# Production traffic is served by Vercel (Path 1), which deploys itself via
+# its own GitHub App integration — that path is untouched by this file.
+#
+# This workflow deploys the Docker/Kubernetes path instead: whatever cluster
+# the KUBE_CONFIG secret points at (a local kind cluster, the infra/aws/
+# k3s cluster, or any other Kubernetes cluster). It's manual, not automatic
+# on push, because Path 2 isn't live anywhere by default — trigger it
+# yourself once you actually have a cluster's KUBE_CONFIG secret set.
+#
 # Jobs:
 #   1. push-image      → Tag with git SHA + latest, push to Docker Hub
-#   2. deploy          → kubectl apply to Kubernetes cluster
-#   3. health-check    → Verify deployment is live after rollout
-#
-# From your version (kept):
-#   + workflow_run trigger (only deploys after CI passes — correct pattern)
-#   + Docker Hub login + push
-#   + kubectl apply
-#
-# Fixed/added:
-#   - actions/checkout@v3 → v4
-#   + Image tagged with git SHA (not just :latest) — enables rollback
-#   + kubectl rollout status (waits for pods to be ready before health check)
-#   + Post-deploy health check
-#   + deploy only runs on main branch (your version deployed on any branch that ran CI)
+#   2. deploy          → kubectl apply to whichever cluster KUBE_CONFIG points at
+#   3. health-check    → Verify deployment is live after rollout, roll back on failure
 # ─────────────────────────────────────────────────────────────────────────────
 name: CD - Deploy to Kubernetes
 
 on:
-  workflow_run:
-    workflows: ["CI"]           # Must match the `name:` field in ci.yml exactly
-    types: [completed]
-    branches: [main]            # Only deploy from main, not feature branches
+  workflow_dispatch: {}
 
 env:
   IMAGE_NAME: ${{ secrets.DOCKER_USERNAME }}/nextjs-app
@@ -35,14 +28,10 @@ jobs:
   push-image:
     name: Push Docker Image
     runs-on: ubuntu-latest
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
-
-    outputs:
-      image-tag: ${{ github.event.workflow_run.head_sha }}
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4    # was v3
+        uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -60,7 +49,7 @@ jobs:
           push: true
           # Two tags: SHA for traceability/rollback, latest for convenience
           tags: |
-            ${{ env.IMAGE_NAME }}:${{ github.event.workflow_run.head_sha }}
+            ${{ env.IMAGE_NAME }}:${{ github.sha }}
             ${{ env.IMAGE_NAME }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -84,21 +73,24 @@ jobs:
           echo "${{ secrets.KUBE_CONFIG }}" > $HOME/.kube/config
           chmod 600 $HOME/.kube/config   # Secure the credentials file
 
-      - name: Update image tag in deployment
-        # Patch the deployment to use the exact SHA-tagged image
-        # This is safer than re-applying the yaml (which may still reference :latest)
-        run: |
-          kubectl set image deployment/nextjs-app \
-            nextjs-app=${{ env.IMAGE_NAME }}:${{ github.event.workflow_run.head_sha }}
-
-      - name: Apply any updated K8s manifests
+      - name: Apply K8s manifests (creates resources on first run, updates them after)
         run: |
           kubectl apply -f k8s/deployment.yaml
           kubectl apply -f k8s/service.yaml
 
+      - name: Pin deployment to the exact SHA-tagged image
+        # Done after apply so this works whether the Deployment was just
+        # created (still on :latest) or already existed.
+        run: |
+          kubectl set image deployment/nextjs-deployment \
+            nextjs-app=${{ env.IMAGE_NAME }}:${{ github.sha }}
+
       - name: Wait for rollout to complete
-        # Blocks until all pods are running the new image — or fails after 3 min
-        run: kubectl rollout status deployment/nextjs-app --timeout=180s
+        # Blocks until all replicas are running the new image — or fails after 3 min
+        run: kubectl rollout status deployment/nextjs-deployment --timeout=180s
+
+      - name: Show pod distribution across nodes
+        run: kubectl get pods -o wide -l app=nextjs-app
 
   # ── Job 3: Post-deployment health check ───────────────────────────────────
   health-check:
@@ -107,7 +99,7 @@ jobs:
     needs: deploy
 
     steps:
-      - name: Wait for ingress/DNS to propagate
+      - name: Wait for the Service to route to the new pods
         run: sleep 15
 
       - name: Check /api/health
@@ -117,10 +109,22 @@ jobs:
             echo "Health check FAILED — got HTTP $RESPONSE from ${{ secrets.PRODUCTION_URL }}/api/health"
             exit 1
           fi
-          echo "Health check PASSED — deployment of ${{ github.event.workflow_run.head_sha }} is live"
+          echo "Health check PASSED — deployment of ${{ github.sha }} is live"
+
+      - name: Setup kubectl (for rollback)
+        if: failure()
+        uses: azure/setup-kubectl@v3
+
+      - name: Configure kubeconfig (for rollback)
+        if: failure()
+        run: |
+          mkdir -p $HOME/.kube
+          echo "${{ secrets.KUBE_CONFIG }}" > $HOME/.kube/config
+          chmod 600 $HOME/.kube/config
 
       - name: Rollback on failure
         if: failure()
         run: |
           echo "Health check failed — rolling back deployment"
-          kubectl rollout undo deployment/nextjs-app
+          kubectl rollout undo deployment/nextjs-deployment
+          kubectl rollout status deployment/nextjs-deployment --timeout=180s

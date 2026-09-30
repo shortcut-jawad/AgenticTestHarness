@@ -1,12 +1,14 @@
 import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { previewParseLog } from "@/lib/parser";
 
-const showcaseDir = "/home/shaheer/sproj/AgenticTestHarness_SPROJ/tests/fixtures/showcase";
+const showcaseDir = join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "showcase");
 
 function readFixture(name: string) {
-  return readFileSync(`${showcaseDir}/${name}`, "utf8");
+  return readFileSync(join(showcaseDir, name), "utf8");
 }
 
 describe("showcase parser fixtures", () => {

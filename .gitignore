@@ -33,6 +33,14 @@ yarn-error.log*
 # env files (can opt-in for committing if needed)
 .env*
 
+# real k8s secrets (only k8s/secrets.example.yaml, the template, is committed)
+/k8s/secrets.yaml
+
+# AWS k3s cluster artifacts (SSH keys, kubeconfig, per-run instance state)
+/infra/aws/*.pem
+/infra/aws/kubeconfig-*.yaml
+/infra/aws/.cluster-state.env
+
 # vercel
 .vercel
 
@@ -48,6 +56,9 @@ next-env.d.ts
 
 # local agent context
 AGENTS.md
+
+# personal screenshots (portfolio use, not repo content)
+/Screenshots/
 
 # python cache
 __pycache__/

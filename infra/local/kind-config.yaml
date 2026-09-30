@@ -1,0 +1,10 @@
+# 3-node local cluster (1 control-plane + 2 workers) — enough to actually
+# spread the app's 3 replicas one-per-node via the anti-affinity rule in
+# k8s/deployment.yaml, and to visibly demonstrate `kubectl get nodes`
+# showing 3 real nodes for screenshots/demos.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+  - role: worker
+  - role: worker

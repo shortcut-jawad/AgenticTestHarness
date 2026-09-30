@@ -3,6 +3,10 @@ kind: Deployment
 metadata:
   name: nextjs-deployment
 spec:
+  # Cloud-agnostic production template: 3 replicas load-balanced by the
+  # Service below, spread across nodes where the cluster has more than one.
+  # Runs the same locally (kind/minikube/Docker Desktop) as on any paid
+  # cloud Kubernetes offering — only the node sizing changes.
   replicas: 3
   selector:
     matchLabels:
@@ -12,6 +16,18 @@ spec:
       labels:
         app: nextjs-app
     spec:
+      # Prefer spreading replicas across different nodes rather than
+      # stacking them on one, when the cluster has more than one node.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: nextjs-app
+                topologyKey: kubernetes.io/hostname
+
       initContainers:
         - name: init-uploads
           image: busybox:1.36
@@ -19,9 +35,10 @@ spec:
           volumeMounts:
             - name: uploads-volume
               mountPath: /app/uploads
+
       containers:
         - name: nextjs-app
-          image: shortcutjawad/nextjs-app:latest  
+          image: shortcutjawad/nextjs-app:latest
           ports:
             - containerPort: 3000
 
@@ -33,36 +50,104 @@ spec:
             - name: HOSTNAME
               value: "0.0.0.0"
 
-            # Database 
+            # Database (Supabase — same connection strings used in every other
+            # environment; there is no in-cluster Postgres for this app)
             - name: DATABASE_URL
-              value: "postgresql://postgres:postgres@postgres-service:5432/agentic_test_harness"
-
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: database_url
             - name: DIRECT_URL
-              value: "postgresql://postgres:postgres@postgres-service:5432/agentic_test_harness"
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: direct_url
 
             - name: JWT_SECRET
               valueFrom:
                 secretKeyRef:
                   name: app-secrets
                   key: jwt_secret
+            - name: JWT_EXPIRES_DAYS
+              value: "14"
 
             - name: GOOGLE_GEMINI_API
               valueFrom:
                 secretKeyRef:
                   name: app-secrets
                   key: gemini_api
-
             - name: GROQ_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: app-secrets
                   key: groq_api
 
+            # OpenAI-compatible models + multi-key rotation (test harness)
+            - name: OPENAI_BASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: openai_base_url
+            - name: OPENAI_MODEL
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: openai_model
             - name: OPENAI_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: app-secrets
                   key: openai_api
+            - name: OPENAI_API_KEY_1
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: openai_api_1
+                  optional: true
+            - name: OPENAI_API_KEY_2
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: openai_api_2
+                  optional: true
+            - name: OPENAI_MODEL_1
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: openai_model_1
+                  optional: true
+            - name: OPENAI_MODEL_2
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: openai_model_2
+                  optional: true
+
+          resources:
+            # Reasonable defaults for a Next.js standalone app — tune to
+            # match whatever nodes the cluster actually runs on.
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 3
+
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            failureThreshold: 3
 
           volumeMounts:
             - name: uploads-volume
@@ -71,4 +156,3 @@ spec:
       volumes:
         - name: uploads-volume
           emptyDir: {}
-

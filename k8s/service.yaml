@@ -1,12 +1,16 @@
+# type: LoadBalancer here is satisfied by k3s's built-in ServiceLB (Klipper) —
+# no AWS ELB/ALB/NLB is created, so there's no load-balancer charge. Klipper
+# runs a small proxy on every node and forwards to whichever pod replica is
+# healthy, so hitting port 80 on ANY of the 3 node public IPs load-balances
+# across all 3 pods.
 apiVersion: v1
 kind: Service
 metadata:
   name: nextjs-service
 spec:
-  type: NodePort
+  type: LoadBalancer
   selector:
     app: nextjs-app
   ports:
     - port: 80
       targetPort: 3000
-      nodePort: 30007
