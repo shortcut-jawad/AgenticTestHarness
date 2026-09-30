@@ -214,15 +214,20 @@ JWT_EXPIRES_DAYS=14
 GOOGLE_GEMINI_API=your-gemini-api-key
 
 # OpenAI-compatible models (required for test harness)
-OPENAI_API_KEY=your-api-key
-OPENAI_BASE_URL=https://your-endpoint.example.com/v1
-OPENAI_MODEL=gpt-4.1-mini
+# Any OpenAI-compatible endpoint works here, not just OpenAI's own. The
+# free option: point this at Groq (groq.com) instead — genuinely free tier,
+# no card required, and it's the same GROQ_API_KEY already used for judging
+# below. llama-3.3-70b-versatile supports tool calling, which the test
+# harness needs.
+OPENAI_API_KEY=your-groq-api-key
+OPENAI_BASE_URL=https://api.groq.com/openai/v1
+OPENAI_MODEL=llama-3.3-70b-versatile
 
 # Additional models and keys (optional, for rotation)
-OPENAI_MODEL_1=gpt-4.1
-OPENAI_MODEL_2=gpt-4.1-mini
-OPENAI_API_KEY_1=another-api-key
-OPENAI_API_KEY_2=third-api-key
+OPENAI_MODEL_1=llama-3.3-70b-versatile
+OPENAI_MODEL_2=llama-3.3-70b-versatile
+OPENAI_API_KEY_1=another-groq-api-key
+OPENAI_API_KEY_2=third-groq-api-key
 
 # Budget limits (optional)
 MAX_JUDGE_BUDGET=2.0
@@ -233,7 +238,7 @@ MODEL_COST_PER_MILLION_TOKENS=0.1
 UPLOADS_DIR=./uploads
 ```
 
-Judging additionally requires `GROQ_API_KEY` for the multi-model judging panel.
+Judging additionally requires `GROQ_API_KEY` for the multi-model judging panel — this can be the exact same key as `OPENAI_API_KEY` above if you're using the free Groq option.
 
 ### Running Locally
 
