@@ -67,7 +67,7 @@ The primary request path is browser -> authenticated Next.js API routes -> Prism
 | Validation | Zod v4 |
 | Charts | Recharts |
 | PDF Export | jsPDF + html2canvas |
-| CI/CD | GitHub Actions (lint, test, build, SonarQube) + Vercel auto-deploy (production) + manual Docker/K8s deploy (self-hosted) |
+| CI/CD | GitHub Actions (lint, test, build) + Vercel auto-deploy (production) + manual Docker/K8s deploy (self-hosted) + SonarQube Cloud scan (integrated, inactive until configured) |
 | Containerization | Docker (multi-stage Node 20 Alpine), Kubernetes |
 
 ## Features
@@ -296,7 +296,7 @@ Either way, deployment uses the same `k8s/deployment.yaml` / `k8s/service.yaml` 
 
 ## CI/CD
 
-CI/CD also splits along the same two paths:
+CI/CD splits along the same two deployment paths, plus one more integrated-but-inactive path (SonarQube Cloud) that never blocks either of them:
 
 **Path 1 (Vercel):** no workflow file — Vercel builds and deploys on every push via its own GitHub App integration, independent of everything below.
 
@@ -305,8 +305,10 @@ CI/CD also splits along the same two paths:
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
 | `ci.yml` | Push to `main`, PRs | Lint, test, and build validation — **this must stay green**; it's the gate for both deployment paths |
-| `build.yml` | Push/PR | SonarQube code quality scan |
+| `build.yml` | Push/PR | SonarQube Cloud scan — integrated but inactive (see below) |
 | `cd.yml` | Manual (`workflow_dispatch`) | Build + push Docker image, deploy to whichever Kubernetes cluster `KUBE_CONFIG` points at, health-check, auto-rollback |
+
+**SonarQube Cloud (`build.yml`)** is a third path, kept the same way as Docker/Kubernetes: fully wired up in source, inert until someone actually pays for and configures it. Until the `SONAR_TOKEN` repo secret is set, the workflow detects that and skips the scan step instead of failing — it will always report success either way. To activate it: create a project at [sonarcloud.io](https://sonarcloud.io) (free for public repos, paid for private), add its token as the `SONAR_TOKEN` GitHub Actions secret, and replace the placeholder `sonar.projectKey` / `sonar.organization` values in `sonar-project.properties` with your own.
 
 `cd.yml` is deliberately manual, not automatic on push — Path 2 isn't live anywhere right now, so nothing should try to deploy to it on every commit. Trigger it yourself (Actions tab -> "CD - Deploy to Kubernetes" -> Run workflow) once you have a real cluster's `KUBE_CONFIG` secret set.
 
