@@ -218,7 +218,7 @@ export default function ModelSettingsCard() {
                   if (error) setError(null);
                   if (success) setSuccess(null);
                 }}
-                placeholder="llama-3.3-70b-versatile"
+                placeholder="openai/gpt-oss-120b"
                 className="mt-1 w-full rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-2 text-zinc-100 placeholder:text-zinc-600 outline-none transition focus:border-zinc-600 focus:ring-1 focus:ring-zinc-600"
                 disabled={loading || submitting}
               />
@@ -237,7 +237,7 @@ export default function ModelSettingsCard() {
                   if (error) setError(null);
                   if (success) setSuccess(null);
                 }}
-                placeholder="llama-3.1-8b-instant"
+                placeholder="openai/gpt-oss-20b"
                 className="mt-1 w-full rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-2 text-zinc-100 placeholder:text-zinc-600 outline-none transition focus:border-zinc-600 focus:ring-1 focus:ring-zinc-600"
                 disabled={loading || submitting}
               />

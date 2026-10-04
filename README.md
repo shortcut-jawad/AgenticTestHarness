@@ -260,7 +260,7 @@ Two server-side modules handle parsing and judging:
 
 - **`src/lib/parser.ts`** -- Downloads log files from local storage, auto-detects format, runs adapter-based ingestion (OpenAI Agents, LangChain, Public Data Trajectory, Generic JSONL), extracts events and metrics, builds judge packets, and stores structured results in the database.
 
-- **`src/lib/judger.ts`** -- Multi-model evaluation panel using 6 free-tier Groq models (llama-3.3-70b, llama-3.1-8b, compound-mini, compound, llama-4-scout, qwen3-32b) plus a verifier model. Produces per-dimension scorecards with reasoning, evidence, and confidence scores via median-based adjudication. Supports custom rubrics.
+- **`src/lib/judger.ts`** -- Multi-model evaluation panel using free-tier Groq models (defaults: gpt-oss-120b, gpt-oss-20b, qwen3.8-27b — configurable per workspace) plus a verifier model. Produces per-dimension scorecards with reasoning, evidence, and confidence scores via median-based adjudication. Supports custom rubrics.
 
 ## Deployment
 
