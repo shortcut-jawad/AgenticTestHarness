@@ -217,15 +217,15 @@ GOOGLE_GEMINI_API=your-gemini-api-key
 # Any OpenAI-compatible endpoint works here, not just OpenAI's own. The
 # free option: point this at Groq (groq.com) instead — genuinely free tier,
 # no card required, and it's the same GROQ_API_KEY already used for judging
-# below. llama-3.3-70b-versatile supports tool calling, which the test
+# below. openai/gpt-oss-120b supports tool calling, which the test
 # harness needs.
 OPENAI_API_KEY=your-groq-api-key
 OPENAI_BASE_URL=https://api.groq.com/openai/v1
-OPENAI_MODEL=llama-3.3-70b-versatile
+OPENAI_MODEL=openai/gpt-oss-120b
 
 # Additional models and keys (optional, for rotation)
-OPENAI_MODEL_1=llama-3.3-70b-versatile
-OPENAI_MODEL_2=llama-3.3-70b-versatile
+OPENAI_MODEL_1=openai/gpt-oss-20b
+OPENAI_MODEL_2=openai/gpt-oss-20b
 OPENAI_API_KEY_1=another-groq-api-key
 OPENAI_API_KEY_2=third-groq-api-key
 

@@ -293,7 +293,7 @@ export async function POST(req: Request) {
     transcript.push({ role: 'system', content: suite.systemPrompt });
     transcript.push({ role: 'user', content: suite.userPrompt });
 
-    const maxIterations = options?.maxIterations ?? 6;
+    const maxIterations = options?.maxIterations ?? 8;
     const runStartedAt = new Date();
     let lastAssistantMessage: AIMessage | null = null;
     let status: 'success' | 'partial' | 'failed' | 'error' = 'partial';
