@@ -5,15 +5,15 @@ import { prisma } from "@/lib/prisma";
 export const DEFAULT_EVALUATOR_PROVIDER = "gemini";
 export const DEFAULT_EVALUATOR_MODEL = "gemini-2.5-flash";
 export const DEFAULT_JUDGE_PROVIDER = "groq";
-export const DEFAULT_JUDGE_PRIMARY_MODEL = "llama-3.3-70b-versatile";
-export const DEFAULT_JUDGE_VERIFIER_MODEL = "llama-3.1-8b-instant";
+export const DEFAULT_JUDGE_PRIMARY_MODEL = "openai/gpt-oss-120b";
+export const DEFAULT_JUDGE_VERIFIER_MODEL = "openai/gpt-oss-20b";
+// Models a free Groq account can use today (Groq retired the Llama models from
+// the free tier). Models that fail are skipped by the panel, so a workspace
+// with access to more models can add them in its model settings.
 export const DEFAULT_JUDGE_PANEL_MODELS = [
-  "llama-3.3-70b-versatile",
-  "llama-3.1-8b-instant",
-  "groq/compound-mini",
-  "groq/compound",
-  "meta-llama/llama-4-scout-17b-16e-instruct",
-  "qwen/qwen3-32b",
+  "openai/gpt-oss-120b",
+  "openai/gpt-oss-20b",
+  "qwen/qwen3.8-27b",
 ] as const;
 
 export type WorkspaceModelConfigValues = {
